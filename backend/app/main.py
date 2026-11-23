@@ -9,10 +9,13 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -38,6 +41,12 @@ from .models import (
     utc_now,
 )
 from .pipeline import execute_job
+
+try:
+    from .tasks import execute_job_task
+    _CELERY_AVAILABLE = True
+except Exception:
+    _CELERY_AVAILABLE = False
 from .schemas import (
     AnswerCreate,
     DeleteProjectRequest,
@@ -61,7 +70,16 @@ from .schemas import (
 from .storage import storage_service
 
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", 31457280))
+MAX_DOCS_PER_USER = int(os.getenv("MAX_DOCS_PER_USER", 100))
+MAX_EXPORTS_PER_USER = int(os.getenv("MAX_EXPORTS_PER_USER", 100))
+MAX_ACTIVE_JOBS_PER_USER = int(os.getenv("MAX_ACTIVE_JOBS_PER_USER", 50))
+USE_CELERY = os.getenv("USE_CELERY", "false").lower() in ("true", "1", "yes")
 
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=["300/minute"],
+    enabled=os.getenv("RATE_LIMIT_ENABLED", "false").lower() in ("true", "1", "yes"),
+)
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(message)s")
 logger = logging.getLogger("answerly")
@@ -80,12 +98,17 @@ bearer = HTTPBearer(auto_error=False)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    Base.metadata.create_all(bind=engine)
+    # Tables are managed by Alembic migrations.
+    # In development, auto-create any missing tables for convenience.
+    if APP_ENV != "production":
+        Base.metadata.create_all(bind=engine)
     logger.info(json.dumps({"event": "application_started", "environment": APP_ENV}))
     yield
 
 
 app = FastAPI(title="Answerly API", version="0.1.0", lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -226,7 +249,8 @@ def ready(db: Session = Depends(get_db)):
 
 
 @app.post("/api/v1/auth/register", status_code=status.HTTP_201_CREATED)
-def register(body: RegisterRequest, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def register(request: Request, body: RegisterRequest, db: Session = Depends(get_db)):
     email = _valid_email(body.email)
     if db.scalar(select(User.id).where(func.lower(User.email) == email)):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
@@ -242,7 +266,8 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @app.post("/api/v1/auth/login")
-def login(body: LoginRequest, db: Session = Depends(get_db)):
+@limiter.limit("20/minute")
+def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
     email = _valid_email(body.email)
     user = db.scalar(select(User).where(func.lower(User.email) == email))
     if user is None or not _verify_password(body.password, user.password_hash):
@@ -312,13 +337,25 @@ def delete_project(
 
 
 @app.post("/api/v1/projects/{project_id}/documents", status_code=status.HTTP_201_CREATED)
+@limiter.limit("30/minute")
 async def upload_document(
     project_id: str,
+    request: Request,
     file: UploadFile = File(...),
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
     project = _owned_project(db, project_id, user.id)
+
+    # Enforce per-user upload quota
+    user_doc_count = db.scalar(
+        select(func.count(Document.id))
+        .join(Project, Document.project_id == Project.id)
+        .where(Project.user_id == user.id)
+    ) or 0
+    if user_doc_count >= MAX_DOCS_PER_USER:
+        raise HTTPException(status_code=400, detail=f"User document quota exceeded (maximum {MAX_DOCS_PER_USER} documents)")
+
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail=f"File exceeds maximum upload size of {MAX_UPLOAD_BYTES} bytes")
@@ -588,6 +625,21 @@ def start_processing(
                 detail="Idempotency key conflict: reused with different questions/references",
             )
 
+    # Check concurrency quota
+    active_jobs = db.scalar(
+        select(func.count(ProcessingJob.id))
+        .join(ProcessingRun, ProcessingJob.processing_run_id == ProcessingRun.id)
+        .where(
+            ProcessingRun.user_id == user.id,
+            ProcessingJob.status.in_(["QUEUED", "GENERATING", "VERIFYING", "REVISING"]),
+        )
+    ) or 0
+    if active_jobs + len(q_ids) > MAX_ACTIVE_JOBS_PER_USER:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Concurrency quota exceeded: active jobs ({active_jobs}) + requested ({len(q_ids)}) exceeds limit of {MAX_ACTIVE_JOBS_PER_USER}",
+        )
+
     # Create run and child jobs in a single transaction
     new_run = ProcessingRun(
         user_id=user.id,
@@ -623,6 +675,15 @@ def start_processing(
 
     db.commit()
     db.refresh(new_run)
+
+    # Dispatch jobs to Celery workers if enabled
+    if _CELERY_AVAILABLE and USE_CELERY:
+        for j_info in jobs_out:
+            try:
+                execute_job_task.delay(j_info["id"])
+            except Exception as e:
+                logger.warning(f"Could not enqueue job {j_info['id']} to Celery: {e}")
+
     return {
         "id": new_run.id,
         "project_id": new_run.project_id,
@@ -704,6 +765,13 @@ def regenerate_question(
     question.status = "QUEUED"
     db.commit()
     db.refresh(job)
+
+    # Dispatch to Celery if available and enabled
+    if _CELERY_AVAILABLE and USE_CELERY:
+        try:
+            execute_job_task.delay(job.id)
+        except Exception as e:
+            logger.warning(f"Could not enqueue regen job {job.id} to Celery: {e}")
 
     return {"run_id": run.id, "job_id": job.id, "status": job.status}
 
@@ -938,10 +1006,23 @@ def get_document_progress(document_id: str, user: User = Depends(current_user), 
 @app.get("/api/v1/documents/{document_id}/events")
 def stream_document_events(
     document_id: str,
-    user: User = Depends(current_user),
+    token: str | None = Query(None),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     last_event_id: str | None = Header(None, alias="Last-Event-ID"),
     db: Session = Depends(get_db),
 ):
+    # SSE cannot send Authorization header; support query-param token fallback
+    user = None
+    if credentials and credentials.scheme.lower() == "bearer":
+        try:
+            user = current_user(credentials, db)
+        except HTTPException:
+            pass
+    if user is None and token:
+        user_id = _decode_token(token)
+        user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Bearer token required")
     _owned_document(db, document_id, user.id)
     progress = get_document_progress(document_id, user, db)
 
@@ -1097,6 +1178,13 @@ def create_document_export(
     user: User = Depends(current_user),
     db: Session = Depends(get_db),
 ):
+    # Enforce export quota
+    user_export_count = db.scalar(
+        select(func.count(Export.id)).where(Export.user_id == user.id)
+    ) or 0
+    if user_export_count >= MAX_EXPORTS_PER_USER:
+        raise HTTPException(status_code=400, detail=f"User export quota exceeded (maximum {MAX_EXPORTS_PER_USER} exports)")
+
     doc = _owned_document(db, document_id, user.id)
     query = select(Question).where(Question.document_id == document_id)
     if body.question_ids:

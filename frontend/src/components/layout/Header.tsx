@@ -75,18 +75,18 @@ export function Header({ onOpenAuth }: HeaderProps) {
 
   return (
     <>
-      <header className="border-b border-slate-800/80 bg-slate-950/80 backdrop-blur-md sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-4 h-15 flex items-center justify-between gap-4">
+      <header className="answerly-header sticky top-0 z-40">
+        <div className="answerly-header-inner mx-auto flex items-center justify-between gap-4">
           {/* Logo & Brand */}
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white shadow-sm shadow-blue-500/20">
-              <BookOpen className="w-4 h-4" />
+          <div className="flex items-center gap-2.5">
+            <div className="answerly-mark">
+              <BookOpen className="w-4 h-4" strokeWidth={2} />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="font-semibold text-slate-100 tracking-tight text-base">Answerly</span>
-                <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">
-                  Exam Engine
+                <span className="answerly-brand font-semibold tracking-tight text-base">Answerly</span>
+                <span className="hidden lg:inline text-[11px] text-slate-500">
+                  Study workspace
                 </span>
               </div>
             </div>
@@ -94,7 +94,7 @@ export function Header({ onOpenAuth }: HeaderProps) {
 
           {/* Project Switcher */}
           <div className="relative">
-            <div className="flex items-center gap-1.5 bg-slate-900/80 border border-slate-800 rounded-lg p-1 shadow-sm">
+            <div className="answerly-project-switch flex items-center gap-1 p-1">
               <button
                 type="button"
                 onClick={() => setIsDropdownOpen(!isDropdownOpen)}
@@ -123,7 +123,7 @@ export function Header({ onOpenAuth }: HeaderProps) {
             </div>
 
               {isDropdownOpen && (
-                <div className="absolute left-0 mt-2 w-64 bg-slate-900 border border-slate-800 rounded-lg shadow-2xl py-1 z-50">
+                <div className="answerly-project-menu absolute left-0 mt-2 w-64 bg-slate-900 border border-slate-800 rounded-lg shadow-2xl py-1 z-50">
                   <div className="px-3 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-800/80">
                     Your Projects
                   </div>
@@ -177,7 +177,7 @@ export function Header({ onOpenAuth }: HeaderProps) {
             </div>
 
           {/* Right side controls: Health indicator + User */}
-          <div className="flex items-center gap-3">
+          <div className="answerly-header-actions flex items-center gap-3">
             {/* Health pill */}
             <div
               className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${
@@ -191,26 +191,28 @@ export function Header({ onOpenAuth }: HeaderProps) {
                   isBackendReady ? "bg-emerald-400 animate-pulse" : "bg-amber-400"
                 }`}
               />
-              <span className="text-[11px]">{isBackendReady ? "Engine Ready" : "Connecting..."}</span>
+              <span className="hidden lg:inline text-[11px]">{isBackendReady ? "Ready" : "Connecting..."}</span>
             </div>
 
             {/* Auth button */}
             {isAuthenticated ? (
               <button
                 onClick={logout}
+                aria-label="Sign out"
                 title="Sign out"
                 className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg transition-colors"
               >
                 <LogOut className="w-3.5 h-3.5" />
-                <span>Sign Out</span>
+                <span className="hidden lg:inline">Sign Out</span>
               </button>
             ) : (
               <button
                 onClick={onOpenAuth}
+                aria-label="Sign in"
                 className="flex items-center gap-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 px-3.5 py-1.5 rounded-lg transition-colors shadow-sm"
               >
                 <LogIn className="w-3.5 h-3.5" />
-                <span>Sign In</span>
+                <span className="hidden lg:inline">Sign In</span>
               </button>
             )}
           </div>

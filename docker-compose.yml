@@ -19,11 +19,76 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    volumes:
+      - answerly-redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
 
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://answerly:answerly@postgres:5432/answerly
+      REDIS_URL: redis://redis:6379/0
+      USE_CELERY: "true"
+      AUTH_SECRET: ${AUTH_SECRET:-jSww2weeTrrJejh7PeZ-Q35sqm-Q0f7PRX0z2P0uuiL09cSr4IynGsNqdAWTYfrZ}
+      LOCAL_STORAGE_PATH: /app/storage
+      MAX_UPLOAD_BYTES: 31457280
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      GENERATOR_MODEL: ${GENERATOR_MODEL:-google/gemini-2.5-flash}
+      VERIFIER_MODEL: ${VERIFIER_MODEL:-google/gemini-2.5-flash}
+      REFINER_MODEL: ${REFINER_MODEL:-google/gemini-2.5-flash}
+    volumes:
+      - answerly-storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: celery -A backend.app.celery_app.celery_app worker --loglevel=info --concurrency=4
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://answerly:answerly@postgres:5432/answerly
+      REDIS_URL: redis://redis:6379/0
+      USE_CELERY: "true"
+      AUTH_SECRET: ${AUTH_SECRET:-jSww2weeTrrJejh7PeZ-Q35sqm-Q0f7PRX0z2P0uuiL09cSr4IynGsNqdAWTYfrZ}
+      LOCAL_STORAGE_PATH: /app/storage
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      GENERATOR_MODEL: ${GENERATOR_MODEL:-google/gemini-2.5-flash}
+      VERIFIER_MODEL: ${VERIFIER_MODEL:-google/gemini-2.5-flash}
+      REFINER_MODEL: ${REFINER_MODEL:-google/gemini-2.5-flash}
+    volumes:
+      - answerly-storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://backend:8000
+    depends_on:
+      - backend
+
 volumes:
   answerly-postgres:
+  answerly-redis:
+  answerly-storage:

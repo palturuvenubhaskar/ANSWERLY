@@ -61,8 +61,8 @@ export function AuthModal({ isOpen, onClose }: AuthModalProps) {
           </h2>
           <p className="text-xs text-slate-400 mt-1">
             {isRegister
-              ? "Turn raw question banks into verified, high-scoring exam answers."
-              : "Access your saved question workspaces and exam exports."}
+              ? "Keep your question projects, course notes, and answer drafts together."
+              : "Return to your saved question projects and answer drafts."}
           </p>
         </div>
 

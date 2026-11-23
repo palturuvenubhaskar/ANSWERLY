@@ -177,7 +177,7 @@ export function DocumentsTab() {
             <div>
               <h2 className="text-base font-semibold text-slate-100">Upload Question Bank</h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                Accepts multi-page PDF or DOCX files up to 30 MB. Preserves units, marks, and BL/CO tags.
+                Add a PDF or DOCX up to 30 MB. Question text, marks, and course tags stay together.
               </p>
             </div>
             <input
@@ -205,10 +205,10 @@ export function DocumentsTab() {
               <Upload className="w-5 h-5 text-blue-400" />
             </div>
             <p className="text-xs font-medium text-slate-300">
-              Drag and drop syllabus question bank or past exam papers here
+              Choose a question bank to start reviewing its extracted questions
             </p>
             <p className="text-[11px] text-slate-500 mt-1">
-              PyMuPDF engine with scanned OCR fallback and SHA-256 integrity verification
+              PDF and DOCX files up to 30 MB
             </p>
           </div>
         </div>

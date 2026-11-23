@@ -417,7 +417,9 @@ export const api = {
     }
 
     const token = getToken();
-    const url = `${API_BASE}/api/v1/documents/${documentId}/events`;
+    // SSE does not support Authorization headers; pass token as query param
+    const tokenParam = token ? `?token=${encodeURIComponent(token)}` : "";
+    const url = `${API_BASE}/api/v1/documents/${documentId}/events${tokenParam}`;
     
     let eventSource: EventSource | null = null;
     let pollInterval: NodeJS.Timeout | null = null;

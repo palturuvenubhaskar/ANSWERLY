@@ -3,6 +3,7 @@
 __pycache__/
 *.py[cod]
 answerly.db
+*.db
 storage/
 .pytest_cache/
 .coverage
