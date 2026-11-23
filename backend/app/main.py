@@ -100,7 +100,7 @@ bearer = HTTPBearer(auto_error=False)
 async def lifespan(_: FastAPI):
     # Tables are managed by Alembic migrations.
     # In development, auto-create any missing tables for convenience.
-    if APP_ENV != "production":
+    if APP_ENV not in ("production", "test"):
         Base.metadata.create_all(bind=engine)
     logger.info(json.dumps({"event": "application_started", "environment": APP_ENV}))
     yield

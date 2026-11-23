@@ -11,6 +11,12 @@ backend_dir = Path(__file__).resolve().parent.parent
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
+# Configure isolated test environment before app or db initialization
+os.environ["DATABASE_URL"] = "sqlite:///:memory:"
+os.environ["APP_ENV"] = "test"
+os.environ["RATE_LIMIT_ENABLED"] = "false"
+os.environ["USE_CELERY"] = "false"
+
 from app.db import Base, get_db
 from app.main import app
 
