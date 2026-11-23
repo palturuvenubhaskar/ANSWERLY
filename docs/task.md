@@ -42,10 +42,10 @@
 - [x] Track provider, model, prompt version, tokens, latency, and estimated cost.
 
 ## Epic 5 — Review and progress
-- [ ] Show queued/generating/verifying/revising/approved/manual-review/failed/cancelled counts.
-- [ ] Add SSE progress with polling fallback.
-- [ ] Show answer, verifier report, and version history.
-- [ ] Add edit, approve, regenerate, retry, and cancel actions.
+- [x] Show queued/generating/verifying/revising/approved/manual-review/failed/cancelled counts.
+- [x] Add SSE progress with polling fallback.
+- [x] Show answer, verifier report, and version history.
+- [x] Add edit, approve, regenerate, retry, and cancel actions.
 
 ## Epic 6 — Exports
 - [ ] Implement PDF, DOCX, Markdown, and JSON.

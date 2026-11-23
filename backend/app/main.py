@@ -10,6 +10,7 @@ import time
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, status
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
@@ -30,6 +31,7 @@ from .models import (
     ReferenceExcerpt,
     Unit,
     User,
+    VerificationReportRecord,
     utc_now,
 )
 from .pipeline import execute_job
@@ -882,6 +884,149 @@ def create_answer_version(
     db.commit()
     db.refresh(answer)
     return {"id": answer.id, "version_number": answer.version_number, "answer": answer.answer_json}
+
+
+@app.get("/api/v1/documents/{document_id}/progress")
+def get_document_progress(document_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    _owned_document(db, document_id, user.id)
+    questions = db.scalars(select(Question).where(Question.document_id == document_id)).all()
+    counts = {
+        "PENDING": 0,
+        "QUEUED": 0,
+        "GENERATING": 0,
+        "VERIFYING": 0,
+        "REVISING": 0,
+        "VERIFIER_APPROVED": 0,
+        "MANUAL_REVIEW": 0,
+        "FAILED": 0,
+        "CANCELLED": 0,
+    }
+    for q in questions:
+        counts[q.status] = counts.get(q.status, 0) + 1
+    total = len(questions)
+    completed = counts["VERIFIER_APPROVED"] + counts["MANUAL_REVIEW"]
+    percent = round((completed / total) * 100, 1) if total > 0 else 0.0
+    return {
+        "document_id": document_id,
+        "total": total,
+        "completed": completed,
+        "percent": percent,
+        "counts": counts,
+    }
+
+
+@app.get("/api/v1/documents/{document_id}/events")
+def stream_document_events(
+    document_id: str,
+    user: User = Depends(current_user),
+    last_event_id: str | None = Header(None, alias="Last-Event-ID"),
+    db: Session = Depends(get_db),
+):
+    _owned_document(db, document_id, user.id)
+    progress = get_document_progress(document_id, user, db)
+
+    def event_generator():
+        event_id = str(int(time.time()))
+        data = json.dumps(progress)
+        yield f"id: {event_id}\nevent: progress\ndata: {data}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.get("/api/v1/questions/{question_id}/answer")
+def get_latest_question_answer(question_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    _owned_question(db, question_id, user.id)
+    version = db.scalar(
+        select(AnswerVersion)
+        .where(AnswerVersion.question_id == question_id)
+        .order_by(AnswerVersion.version_number.desc())
+    )
+    if not version:
+        raise HTTPException(status_code=404, detail="No answer found for this question")
+
+    report_record = db.scalar(
+        select(VerificationReportRecord).where(VerificationReportRecord.answer_version_id == version.id)
+    )
+    human_decision = db.scalar(
+        select(HumanApproval)
+        .where(HumanApproval.answer_version_id == version.id)
+        .order_by(HumanApproval.created_at.desc())
+    )
+    return {
+        "question_id": question_id,
+        "answer_version_id": version.id,
+        "version_number": version.version_number,
+        "answer": version.answer_json,
+        "provider": version.provider,
+        "model": version.model,
+        "created_at": version.created_at,
+        "verifier_report": report_record.report_json if report_record else None,
+        "latest_human_decision": human_decision.decision if human_decision else None,
+    }
+
+
+@app.get("/api/v1/questions/{question_id}/versions")
+def get_question_versions(question_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    _owned_question(db, question_id, user.id)
+    versions = db.scalars(
+        select(AnswerVersion)
+        .where(AnswerVersion.question_id == question_id)
+        .order_by(AnswerVersion.version_number.asc())
+    ).all()
+
+    out = []
+    for v in versions:
+        report = db.scalar(select(VerificationReportRecord).where(VerificationReportRecord.answer_version_id == v.id))
+        approvals = db.scalars(
+            select(HumanApproval)
+            .where(HumanApproval.answer_version_id == v.id)
+            .order_by(HumanApproval.created_at)
+        ).all()
+        out.append(
+            {
+                "id": v.id,
+                "version_number": v.version_number,
+                "answer": v.answer_json,
+                "provider": v.provider,
+                "model": v.model,
+                "created_at": v.created_at,
+                "verifier_report": report.report_json if report else None,
+                "human_approvals": [
+                    {"decision": a.decision, "reviewer_id": a.user_id, "created_at": a.created_at}
+                    for a in approvals
+                ],
+            }
+        )
+    return out
+
+
+@app.patch("/api/v1/questions/{question_id}/answer", status_code=status.HTTP_201_CREATED)
+def update_question_answer_as_new_version(
+    question_id: str,
+    body: AnswerCreate,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    question = _owned_question(db, question_id, user.id)
+    last_version = db.scalar(select(func.max(AnswerVersion.version_number)).where(AnswerVersion.question_id == question.id)) or 0
+    new_version = AnswerVersion(
+        question_id=question.id,
+        version_number=last_version + 1,
+        answer_json=body.answer.model_dump(mode="json"),
+        provider="manual-user-edit",
+        model="human",
+        prompt_version=None,
+        created_by_user_id=user.id,
+    )
+    db.add(new_version)
+    db.commit()
+    db.refresh(new_version)
+    return {
+        "id": new_version.id,
+        "version_number": new_version.version_number,
+        "answer": new_version.answer_json,
+        "created_at": new_version.created_at,
+    }
 
 
 @app.post("/api/v1/questions/{question_id}/approve", status_code=status.HTTP_201_CREATED)
