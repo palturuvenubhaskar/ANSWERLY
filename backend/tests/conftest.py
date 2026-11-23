@@ -31,6 +31,15 @@ def clean_db():
 
 
 @pytest.fixture
+def db_session():
+    db = TestingSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@pytest.fixture
 def client():
     def override_get_db():
         db = TestingSessionLocal()

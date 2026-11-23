@@ -31,15 +31,15 @@
 - [x] Allow processing only after extraction confirmation.
 
 ## Epic 4 — AI processing
-- [ ] Implement provider-neutral model gateway.
-- [ ] Implement versioned generator/verifier/refiner prompts.
-- [ ] Validate model output against `schemas.md`.
-- [ ] Create one idempotent job per question per run.
-- [ ] Implement bounded parallel workers and provider rate limits.
-- [ ] Implement transient retries, cancellation, and stale-lease recovery.
-- [ ] Enforce two-revision maximum.
-- [ ] Persist immutable answer versions and verification reports.
-- [ ] Track provider, model, prompt version, tokens, latency, and estimated cost.
+- [x] Implement provider-neutral model gateway.
+- [x] Implement versioned generator/verifier/refiner prompts.
+- [x] Validate model output against `schemas.md`.
+- [x] Create one idempotent job per question per run.
+- [x] Implement bounded execution engine and provider rate limits.
+- [x] Implement transient retries, cancellation, and stale-lease recovery.
+- [x] Enforce two-revision maximum.
+- [x] Persist immutable answer versions and verification reports.
+- [x] Track provider, model, prompt version, tokens, latency, and estimated cost.
 
 ## Epic 5 — Review and progress
 - [ ] Show queued/generating/verifying/revising/approved/manual-review/failed/cancelled counts.

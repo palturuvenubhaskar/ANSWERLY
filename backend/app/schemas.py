@@ -160,3 +160,18 @@ class ProcessingRunCreate(StrictModel):
         if len(self.reference_ids) != len(set(self.reference_ids)):
             raise ValueError("reference_ids must not contain duplicates")
         return self
+
+
+class ProcessingJobResponse(StrictModel):
+    id: str
+    question_id: str
+    status: str
+    revision_count: int
+    retry_count: int
+
+
+class ProcessingRunResponse(StrictModel):
+    id: str
+    project_id: str
+    idempotency_key: str
+    jobs: list[ProcessingJobResponse]

@@ -18,13 +18,30 @@ from sqlalchemy.orm import Session
 from .db import Base, engine, get_db
 from .duplicates import find_duplicates
 from .extraction import extract_document, validate_file_content
-from .models import AnswerVersion, Document, HumanApproval, Project, Question, ReferenceExcerpt, Unit, User
+from .models import (
+    AnswerVersion,
+    Document,
+    HumanApproval,
+    ModelCallAttempt,
+    ProcessingJob,
+    ProcessingRun,
+    Project,
+    Question,
+    ReferenceExcerpt,
+    Unit,
+    User,
+    utc_now,
+)
+from .pipeline import execute_job
 from .schemas import (
     AnswerCreate,
     DeleteProjectRequest,
     DocumentResponse,
     HumanApprovalCreate,
     LoginRequest,
+    ProcessingJobResponse,
+    ProcessingRunCreate,
+    ProcessingRunResponse,
     ProjectCreate,
     ProjectUpdate,
     QuestionCreate,
@@ -151,6 +168,17 @@ def _owned_document(db: Session, document_id: str, user_id: str) -> Document:
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return doc
+
+
+def _owned_job(db: Session, job_id: str, user_id: str) -> ProcessingJob:
+    job = db.scalar(
+        select(ProcessingJob)
+        .join(ProcessingRun, ProcessingJob.processing_run_id == ProcessingRun.id)
+        .where(ProcessingJob.id == job_id, ProcessingRun.user_id == user_id)
+    )
+    if job is None:
+        raise HTTPException(status_code=404, detail="Processing job not found")
+    return job
 
 
 def _valid_email(value: str) -> str:
@@ -451,6 +479,211 @@ def confirm_extraction(document_id: str, user: User = Depends(current_user), db:
     doc.status = "READY"
     db.commit()
     return {"id": doc.id, "status": doc.status}
+
+
+@app.post("/api/v1/documents/{document_id}/process", status_code=status.HTTP_201_CREATED)
+def start_processing(
+    document_id: str,
+    body: ProcessingRunCreate,
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    if not idempotency_key or not idempotency_key.strip():
+        raise HTTPException(status_code=400, detail="Idempotency-Key header is required")
+
+    doc = _owned_document(db, document_id, user.id)
+    if doc.status != "READY":
+        raise HTTPException(
+            status_code=400,
+            detail="Document extraction must be confirmed before processing can start",
+        )
+
+    # Determine question IDs
+    if body.question_ids:
+        q_count = db.scalar(
+            select(func.count(Question.id)).where(
+                Question.id.in_(body.question_ids), Question.document_id == doc.id
+            )
+        )
+        if q_count != len(body.question_ids):
+            raise HTTPException(status_code=400, detail="All question_ids must belong to the specified document")
+        q_ids = body.question_ids
+    else:
+        q_ids = db.scalars(
+            select(Question.id).where(Question.document_id == doc.id).order_by(Question.position.asc())
+        ).all()
+        if not q_ids:
+            raise HTTPException(status_code=400, detail="No questions found in this document to process")
+
+    # Determine reference IDs
+    if body.reference_ids:
+        r_count = db.scalar(
+            select(func.count(ReferenceExcerpt.id)).where(
+                ReferenceExcerpt.id.in_(body.reference_ids), ReferenceExcerpt.project_id == doc.project_id
+            )
+        )
+        if r_count != len(body.reference_ids):
+            raise HTTPException(status_code=400, detail="All reference_ids must belong to the same project")
+        ref_ids = body.reference_ids
+    else:
+        ref_ids = []
+
+    # Calculate request hash
+    req_hash = hashlib.sha256(f"{doc.id}:{sorted(q_ids)}:{sorted(ref_ids)}".encode("utf-8")).hexdigest()
+
+    # Scope idempotency key by user and project
+    existing_run = db.scalar(
+        select(ProcessingRun).where(
+            ProcessingRun.user_id == user.id,
+            ProcessingRun.project_id == doc.project_id,
+            ProcessingRun.idempotency_key == idempotency_key,
+        )
+    )
+
+    if existing_run:
+        if existing_run.request_hash == req_hash:
+            # Idempotent response
+            jobs = db.scalars(select(ProcessingJob).where(ProcessingJob.processing_run_id == existing_run.id)).all()
+            return {
+                "id": existing_run.id,
+                "project_id": existing_run.project_id,
+                "idempotency_key": existing_run.idempotency_key,
+                "jobs": [
+                    {
+                        "id": j.id,
+                        "question_id": j.question_id,
+                        "status": j.status,
+                        "revision_count": j.revision_count,
+                        "retry_count": j.retry_count,
+                    }
+                    for j in jobs
+                ],
+            }
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail="Idempotency key conflict: reused with different questions/references",
+            )
+
+    # Create run and child jobs in a single transaction
+    new_run = ProcessingRun(
+        user_id=user.id,
+        project_id=doc.project_id,
+        idempotency_key=idempotency_key,
+        request_hash=req_hash,
+        reference_ids=ref_ids,
+    )
+    db.add(new_run)
+    db.flush()
+
+    jobs_out = []
+    for q_id in q_ids:
+        job = ProcessingJob(
+            processing_run_id=new_run.id,
+            question_id=q_id,
+            status="QUEUED",
+        )
+        db.add(job)
+        db.flush()
+        jobs_out.append(
+            {
+                "id": job.id,
+                "question_id": job.question_id,
+                "status": job.status,
+                "revision_count": job.revision_count,
+                "retry_count": job.retry_count,
+            }
+        )
+        q_obj = db.get(Question, q_id)
+        if q_obj:
+            q_obj.status = "QUEUED"
+
+    db.commit()
+    db.refresh(new_run)
+    return {
+        "id": new_run.id,
+        "project_id": new_run.project_id,
+        "idempotency_key": new_run.idempotency_key,
+        "jobs": jobs_out,
+    }
+
+
+@app.get("/api/v1/jobs/{job_id}")
+def get_job(job_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    job = _owned_job(db, job_id, user.id)
+    return {
+        "id": job.id,
+        "processing_run_id": job.processing_run_id,
+        "question_id": job.question_id,
+        "status": job.status,
+        "revision_count": job.revision_count,
+        "retry_count": job.retry_count,
+        "started_at": job.started_at,
+        "finished_at": job.finished_at,
+        "cancel_requested_at": job.cancel_requested_at,
+        "last_error_code": job.last_error_code,
+        "last_error_message": job.last_error_message,
+    }
+
+
+@app.post("/api/v1/jobs/{job_id}/cancel")
+def cancel_job_endpoint(job_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    job = _owned_job(db, job_id, user.id)
+    job.cancel_requested_at = utc_now()
+    if job.status in ("QUEUED", "PENDING"):
+        job.status = "CANCELLED"
+        q = db.get(Question, job.question_id)
+        if q:
+            q.status = "CANCELLED"
+    db.commit()
+    return {"id": job.id, "status": job.status, "cancel_requested": True}
+
+
+@app.post("/api/v1/jobs/{job_id}/execute")
+def execute_job_endpoint(job_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    _owned_job(db, job_id, user.id)
+    updated_job = execute_job(job_id, db)
+    return {
+        "id": updated_job.id,
+        "status": updated_job.status,
+        "revision_count": updated_job.revision_count,
+        "finished_at": updated_job.finished_at,
+    }
+
+
+@app.post("/api/v1/questions/{question_id}/regenerate", status_code=status.HTTP_201_CREATED)
+def regenerate_question(
+    question_id: str,
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    question = _owned_question(db, question_id, user.id)
+    key = idempotency_key or f"regen-{secrets.token_hex(16)}"
+    req_hash = hashlib.sha256(f"regen:{question.id}".encode("utf-8")).hexdigest()
+
+    run = ProcessingRun(
+        user_id=user.id,
+        project_id=question.project_id,
+        idempotency_key=key,
+        request_hash=req_hash,
+        reference_ids=[],
+    )
+    db.add(run)
+    db.flush()
+
+    job = ProcessingJob(
+        processing_run_id=run.id,
+        question_id=question.id,
+        status="QUEUED",
+    )
+    db.add(job)
+    question.status = "QUEUED"
+    db.commit()
+    db.refresh(job)
+
+    return {"run_id": run.id, "job_id": job.id, "status": job.status}
 
 
 @app.post("/api/v1/projects/{project_id}/questions", status_code=status.HTTP_201_CREATED)

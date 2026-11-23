@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -125,6 +125,11 @@ class ProcessingJob(Base):
     status: Mapped[str] = mapped_column(String(32), default="QUEUED")
     revision_count: Mapped[int] = mapped_column(Integer, default=0)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
@@ -136,6 +141,9 @@ class AnswerVersion(Base):
     question_id: Mapped[str] = mapped_column(ForeignKey("questions.id", ondelete="CASCADE"), index=True)
     version_number: Mapped[int] = mapped_column(Integer)
     answer_json: Mapped[dict] = mapped_column(JSON)
+    provider: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
     created_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -144,9 +152,30 @@ class VerificationReportRecord(Base):
     __tablename__ = "verification_reports"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    question_id: Mapped[str | None] = mapped_column(ForeignKey("questions.id", ondelete="CASCADE"), index=True, nullable=True)
     answer_version_id: Mapped[str] = mapped_column(ForeignKey("answer_versions.id", ondelete="CASCADE"), unique=True)
+    verifier_provider: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    verifier_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     verdict: Mapped[str] = mapped_column(String(32))
     report_json: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ModelCallAttempt(Base):
+    __tablename__ = "model_call_attempts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    processing_job_id: Mapped[str] = mapped_column(ForeignKey("processing_jobs.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(32))  # GENERATOR, VERIFIER, REFINER
+    provider: Mapped[str] = mapped_column(String(100))
+    model: Mapped[str] = mapped_column(String(100))
+    prompt_version: Mapped[str] = mapped_column(String(50))
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    estimated_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    outcome: Mapped[str] = mapped_column(String(32))  # SUCCESS, FAILED
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
