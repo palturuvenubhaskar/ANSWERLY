@@ -8,3 +8,4 @@ storage/
 .coverage
 htmlcov/
 *.sqlite
+docs/
