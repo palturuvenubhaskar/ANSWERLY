@@ -1,7 +1,7 @@
 # Answerly
 
-Answerly helps students turn question banks into organized, exam-oriented answers. This repository now has a runnable API foundation plus the product and engineering specification in `docs/`.
+Answerly helps students turn question banks into organized, exam-oriented answers.
 
-The current API supports accounts, projects, manually entered questions, provenance-labeled text excerpts, answer versions, verifier-report validation, and human review decisions. The planned PDF/DOCX ingestion, model worker, browser UI, and export formats remain to be built; see `docs/task.md`.
+The backend API is fully implemented and tested across all 8 architectural milestones (M0–M7), including authentication, project and question workspace management, PDF/DOCX ingestion with PyMuPDF, prompt generation and verification pipelines with batch idempotency, human approval review, and multi-format exports (PDF, DOCX, Markdown, JSON).
 
-See [`backend/README.md`](backend/README.md) for local setup and [`docs/prd.md`](docs/prd.md) for product scope.
+See [`backend/README.md`](backend/README.md) for local setup, [`docs/api.md`](docs/api.md) for the API specification, and [`docs/task.md`](docs/task.md) for milestone tracking. The Next.js frontend UI remains to be built.
