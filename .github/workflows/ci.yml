@@ -32,7 +32,7 @@ jobs:
           USE_CELERY: "false"
           PYTHONPATH: "backend"
         run: |
-          pytest backend/tests -v
+          python -m pytest backend/tests -v
 
   frontend-build:
     name: Frontend Build & Typecheck
