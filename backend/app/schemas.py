@@ -121,6 +121,18 @@ class QuestionCreate(StrictModel):
     marks: int | None = Field(default=None, ge=1, le=1000)
 
 
+class QuestionUpdate(StrictModel):
+    question_text: str | None = Field(default=None, min_length=1, max_length=20000)
+    marks: int | None = Field(default=None, ge=1, le=1000)
+    bl: str | None = Field(default=None, max_length=32)
+    co: str | None = Field(default=None, max_length=32)
+    position: int | None = Field(default=None, ge=1)
+
+
+class QuestionReorderRequest(StrictModel):
+    ordered_question_ids: list[str] = Field(min_length=1, max_length=1000)
+
+
 class ReferenceExcerptCreate(StrictModel):
     title: str = Field(min_length=1, max_length=300)
     text: str = Field(min_length=1, max_length=50000)

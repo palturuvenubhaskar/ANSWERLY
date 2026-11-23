@@ -25,10 +25,10 @@
 - [x] Flag ambiguous records; never silently drop content.
 
 ## Epic 3 — Question workspace
-- [ ] Implement question list/detail/edit/reorder.
-- [ ] Preserve original extracted text alongside user-corrected text.
-- [ ] Add duplicate suggestions without automatic deletion.
-- [ ] Allow processing only after extraction confirmation.
+- [x] Implement question list/detail/edit/reorder.
+- [x] Preserve original extracted text alongside user-corrected text.
+- [x] Add duplicate suggestions without automatic deletion.
+- [x] Allow processing only after extraction confirmation.
 
 ## Epic 4 — AI processing
 - [ ] Implement provider-neutral model gateway.

@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .db import Base, engine, get_db
+from .duplicates import find_duplicates
 from .extraction import extract_document, validate_file_content
 from .models import AnswerVersion, Document, HumanApproval, Project, Question, ReferenceExcerpt, Unit, User
 from .schemas import (
@@ -28,6 +29,8 @@ from .schemas import (
     ProjectUpdate,
     QuestionCreate,
     QuestionItemResponse,
+    QuestionReorderRequest,
+    QuestionUpdate,
     ReferenceExcerptCreate,
     RegisterRequest,
     VerificationReport,
@@ -459,11 +462,123 @@ def create_question(
 ):
     project = _owned_project(db, project_id, user.id)
     last_position = db.scalar(select(func.max(Question.position)).where(Question.project_id == project.id)) or 0
-    question = Question(project_id=project.id, question_text=body.question_text, marks=body.marks, position=last_position + 1)
+    question = Question(
+        project_id=project.id,
+        question_text=body.question_text,
+        original_text=body.question_text,
+        marks=body.marks,
+        position=last_position + 1,
+    )
     db.add(question)
     db.commit()
     db.refresh(question)
     return {"id": question.id, "question_text": question.question_text, "marks": question.marks, "position": question.position}
+
+
+@app.get("/api/v1/questions/{question_id}")
+def get_question(question_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    q = _owned_question(db, question_id, user.id)
+    return {
+        "id": q.id,
+        "project_id": q.project_id,
+        "document_id": q.document_id,
+        "unit_id": q.unit_id,
+        "question_number": q.question_number,
+        "section": q.section,
+        "question_text": q.question_text,
+        "original_text": q.original_text,
+        "marks": q.marks,
+        "bl": q.bl,
+        "co": q.co,
+        "source_page_start": q.source_page_start,
+        "source_page_end": q.source_page_end,
+        "source_excerpt": q.source_excerpt,
+        "extraction_confidence": q.extraction_confidence,
+        "position": q.position,
+        "status": q.status,
+    }
+
+
+@app.patch("/api/v1/questions/{question_id}")
+def update_question(
+    question_id: str,
+    body: QuestionUpdate,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    q = _owned_question(db, question_id, user.id)
+    if body.question_text is not None:
+        q.question_text = body.question_text
+    if body.marks is not None:
+        q.marks = body.marks
+    if body.bl is not None:
+        q.bl = body.bl
+    if body.co is not None:
+        q.co = body.co
+    if body.position is not None:
+        q.position = body.position
+    # Note: q.original_text is intentionally preserved and NOT overwritten!
+    db.commit()
+    db.refresh(q)
+    return {
+        "id": q.id,
+        "question_text": q.question_text,
+        "original_text": q.original_text,
+        "marks": q.marks,
+        "bl": q.bl,
+        "co": q.co,
+        "position": q.position,
+        "status": q.status,
+    }
+
+
+@app.delete("/api/v1/questions/{question_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_question(question_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    q = _owned_question(db, question_id, user.id)
+    db.delete(q)
+    db.commit()
+
+
+@app.post("/api/v1/documents/{document_id}/questions/reorder")
+def reorder_document_questions(
+    document_id: str,
+    body: QuestionReorderRequest,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    _owned_document(db, document_id, user.id)
+    questions = db.scalars(select(Question).where(Question.document_id == document_id)).all()
+    q_map = {q.id: q for q in questions}
+
+    if set(body.ordered_question_ids) != set(q_map.keys()):
+        raise HTTPException(status_code=400, detail="Reorder list must contain all document question IDs exactly once")
+
+    for idx, q_id in enumerate(body.ordered_question_ids):
+        q_map[q_id].position = idx + 1
+
+    db.commit()
+    return {"status": "reordered", "count": len(body.ordered_question_ids)}
+
+
+@app.get("/api/v1/documents/{document_id}/duplicates")
+def get_document_duplicates(document_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    _owned_document(db, document_id, user.id)
+    questions = db.scalars(
+        select(Question).where(Question.document_id == document_id).order_by(Question.position.asc())
+    ).all()
+    q_dicts = [{"id": q.id, "question_text": q.question_text} for q in questions]
+    duplicates = find_duplicates(q_dicts)
+    return [
+        {
+            "question_id_1": d.question_id_1,
+            "question_id_2": d.question_id_2,
+            "text_1": d.text_1,
+            "text_2": d.text_2,
+            "similarity": d.similarity,
+            "reason": d.reason,
+        }
+        for d in duplicates
+    ]
 
 
 @app.post("/api/v1/projects/{project_id}/references", status_code=status.HTTP_201_CREATED)
