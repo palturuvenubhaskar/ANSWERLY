@@ -9,26 +9,32 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .db import Base, engine, get_db
-from .models import AnswerVersion, HumanApproval, Project, Question, ReferenceExcerpt, User
+from .extraction import extract_document, validate_file_content
+from .models import AnswerVersion, Document, HumanApproval, Project, Question, ReferenceExcerpt, Unit, User
 from .schemas import (
     AnswerCreate,
     DeleteProjectRequest,
+    DocumentResponse,
     HumanApprovalCreate,
     LoginRequest,
     ProjectCreate,
     ProjectUpdate,
     QuestionCreate,
+    QuestionItemResponse,
     ReferenceExcerptCreate,
     RegisterRequest,
     VerificationReport,
 )
+from .storage import storage_service
+
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", 31457280))
 
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(message)s")
@@ -131,6 +137,17 @@ def _owned_question(db: Session, question_id: str, user_id: str) -> Question:
     if question is None:
         raise HTTPException(status_code=404, detail="Question not found")
     return question
+
+
+def _owned_document(db: Session, document_id: str, user_id: str) -> Document:
+    doc = db.scalar(
+        select(Document)
+        .join(Project, Document.project_id == Project.id)
+        .where(Document.id == document_id, Project.user_id == user_id)
+    )
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return doc
 
 
 def _valid_email(value: str) -> str:
@@ -239,6 +256,198 @@ def delete_project(
     project = _owned_project(db, project_id, user.id)
     db.delete(project)
     db.commit()
+
+
+@app.post("/api/v1/projects/{project_id}/documents", status_code=status.HTTP_201_CREATED)
+async def upload_document(
+    project_id: str,
+    file: UploadFile = File(...),
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    project = _owned_project(db, project_id, user.id)
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"File exceeds maximum upload size of {MAX_UPLOAD_BYTES} bytes")
+
+    try:
+        ext, mime_type = validate_file_content(content, file.filename or "")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    stored = storage_service.save(content, extension=ext)
+
+    last_version = db.scalar(select(func.max(Document.version_number)).where(Document.project_id == project.id)) or 0
+    doc = Document(
+        project_id=project.id,
+        version_number=last_version + 1,
+        title=file.filename or f"Document {last_version + 1}",
+        original_filename=file.filename or f"document{ext}",
+        storage_key=stored.storage_key,
+        mime_type=mime_type,
+        file_size_bytes=stored.size_bytes,
+        sha256=stored.sha256,
+        status="EXTRACTING",
+    )
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+
+    try:
+        ext_res = extract_document(content, file.filename or "")
+        unit_map = {}
+        for u_idx, u_name in enumerate(ext_res.units):
+            unit = Unit(document_id=doc.id, name=u_name, position=u_idx + 1)
+            db.add(unit)
+            db.flush()
+            unit_map[u_name] = unit.id
+
+        last_pos = db.scalar(select(func.max(Question.position)).where(Question.project_id == project.id)) or 0
+        for q_idx, q in enumerate(ext_res.questions):
+            u_id = unit_map.get(q.unit_name) if q.unit_name else None
+            question = Question(
+                project_id=project.id,
+                document_id=doc.id,
+                unit_id=u_id,
+                question_number=q.question_number,
+                section=q.section,
+                question_text=q.question_text,
+                original_text=q.original_text,
+                marks=q.marks,
+                bl=q.bl,
+                co=q.co,
+                source_page_start=q.source_page_start,
+                source_page_end=q.source_page_end,
+                source_excerpt=q.source_excerpt,
+                extraction_confidence=q.confidence,
+                position=last_pos + q_idx + 1,
+                status="PENDING",
+            )
+            db.add(question)
+        doc.extraction_warnings = ext_res.warnings
+        doc.status = "REVIEW_REQUIRED" if ext_res.warnings or ext_res.questions else "READY"
+    except Exception as exc:
+        doc.status = "FAILED"
+        doc.extraction_warnings = [f"Extraction failed: {exc}"]
+
+    db.commit()
+    db.refresh(doc)
+    return {
+        "id": doc.id,
+        "project_id": doc.project_id,
+        "title": doc.title,
+        "original_filename": doc.original_filename,
+        "file_size_bytes": doc.file_size_bytes,
+        "mime_type": doc.mime_type,
+        "sha256": doc.sha256,
+        "status": doc.status,
+        "extraction_warnings": doc.extraction_warnings,
+    }
+
+
+@app.get("/api/v1/documents/{document_id}")
+def get_document(document_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    doc = _owned_document(db, document_id, user.id)
+    return {
+        "id": doc.id,
+        "project_id": doc.project_id,
+        "title": doc.title,
+        "original_filename": doc.original_filename,
+        "file_size_bytes": doc.file_size_bytes,
+        "mime_type": doc.mime_type,
+        "sha256": doc.sha256,
+        "status": doc.status,
+        "extraction_warnings": doc.extraction_warnings,
+    }
+
+
+@app.post("/api/v1/documents/{document_id}/extract")
+def retry_extraction(document_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    doc = _owned_document(db, document_id, user.id)
+    content = storage_service.get(doc.storage_key)
+
+    # Clean previous units and questions for this document
+    db.query(Question).filter(Question.document_id == doc.id).delete(synchronize_session=False)
+    db.query(Unit).filter(Unit.document_id == doc.id).delete(synchronize_session=False)
+
+    try:
+        ext_res = extract_document(content, doc.original_filename)
+        unit_map = {}
+        for u_idx, u_name in enumerate(ext_res.units):
+            unit = Unit(document_id=doc.id, name=u_name, position=u_idx + 1)
+            db.add(unit)
+            db.flush()
+            unit_map[u_name] = unit.id
+
+        last_pos = db.scalar(select(func.max(Question.position)).where(Question.project_id == doc.project_id)) or 0
+        for q_idx, q in enumerate(ext_res.questions):
+            u_id = unit_map.get(q.unit_name) if q.unit_name else None
+            question = Question(
+                project_id=doc.project_id,
+                document_id=doc.id,
+                unit_id=u_id,
+                question_number=q.question_number,
+                section=q.section,
+                question_text=q.question_text,
+                original_text=q.original_text,
+                marks=q.marks,
+                bl=q.bl,
+                co=q.co,
+                source_page_start=q.source_page_start,
+                source_page_end=q.source_page_end,
+                source_excerpt=q.source_excerpt,
+                extraction_confidence=q.confidence,
+                position=last_pos + q_idx + 1,
+                status="PENDING",
+            )
+            db.add(question)
+        doc.extraction_warnings = ext_res.warnings
+        doc.status = "REVIEW_REQUIRED" if ext_res.warnings or ext_res.questions else "READY"
+    except Exception as exc:
+        doc.status = "FAILED"
+        doc.extraction_warnings = [f"Extraction failed: {exc}"]
+
+    db.commit()
+    db.refresh(doc)
+    return {
+        "id": doc.id,
+        "status": doc.status,
+        "extraction_warnings": doc.extraction_warnings,
+    }
+
+
+@app.get("/api/v1/documents/{document_id}/questions")
+def list_document_questions(document_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    doc = _owned_document(db, document_id, user.id)
+    questions = db.scalars(
+        select(Question).where(Question.document_id == doc.id).order_by(Question.position.asc())
+    ).all()
+    return [
+        {
+            "id": q.id,
+            "position": q.position,
+            "question_number": q.question_number,
+            "section": q.section,
+            "question_text": q.question_text,
+            "original_text": q.original_text,
+            "marks": q.marks,
+            "bl": q.bl,
+            "co": q.co,
+            "source_page_start": q.source_page_start,
+            "source_page_end": q.source_page_end,
+            "extraction_confidence": q.extraction_confidence,
+            "status": q.status,
+        }
+        for q in questions
+    ]
+
+
+@app.post("/api/v1/documents/{document_id}/confirm-extraction")
+def confirm_extraction(document_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    doc = _owned_document(db, document_id, user.id)
+    doc.status = "READY"
+    db.commit()
+    return {"id": doc.id, "status": doc.status}
 
 
 @app.post("/api/v1/projects/{project_id}/questions", status_code=status.HTTP_201_CREATED)

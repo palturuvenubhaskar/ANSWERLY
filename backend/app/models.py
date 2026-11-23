@@ -34,13 +34,54 @@ class Project(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class Document(Base):
+    __tablename__ = "documents"
+    __table_args__ = (UniqueConstraint("project_id", "version_number", name="uq_doc_project_version"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    version_number: Mapped[int] = mapped_column(Integer, default=1)
+    title: Mapped[str] = mapped_column(String(300))
+    original_filename: Mapped[str] = mapped_column(String(500))
+    storage_key: Mapped[str] = mapped_column(String(128))
+    mime_type: Mapped[str] = mapped_column(String(128))
+    file_size_bytes: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="UPLOADED")  # UPLOADED, EXTRACTING, REVIEW_REQUIRED, READY, FAILED
+    extraction_warnings: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class Unit(Base):
+    __tablename__ = "units"
+    __table_args__ = (UniqueConstraint("document_id", "position", name="uq_unit_document_position"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    position: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class Question(Base):
     __tablename__ = "questions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True, nullable=True)
+    unit_id: Mapped[str | None] = mapped_column(ForeignKey("units.id", ondelete="SET NULL"), index=True, nullable=True)
+    question_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    section: Mapped[str | None] = mapped_column(String(64), nullable=True)
     question_text: Mapped[str] = mapped_column(Text)
+    original_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     marks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bl: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    co: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extraction_confidence: Mapped[float | None] = mapped_column(nullable=True)
     position: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(32), default="PENDING")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

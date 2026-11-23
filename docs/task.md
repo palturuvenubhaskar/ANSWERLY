@@ -14,15 +14,15 @@
 - [x] Add private storage abstraction.
 
 ## Epic 2 — Document ingestion
-- [ ] Validate PDF/DOCX extension, MIME signature, size, and structure.
-- [ ] Store original files privately and calculate SHA-256.
-- [ ] Extract PDF text/page boundaries with PyMuPDF.
-- [ ] Extract DOCX paragraphs/tables.
-- [ ] Add OCR fallback for scanned PDF pages.
-- [ ] Detect units, sections, question numbers, marks, BL, and CO when present.
-- [ ] Preserve source page/range and extraction confidence.
-- [ ] Build extraction preview and correction UI.
-- [ ] Flag ambiguous records; never silently drop content.
+- [x] Validate PDF/DOCX extension, MIME signature, size, and structure.
+- [x] Store original files privately and calculate SHA-256.
+- [x] Extract PDF text/page boundaries with PyMuPDF.
+- [x] Extract DOCX paragraphs/tables.
+- [x] Add OCR fallback for scanned PDF pages.
+- [x] Detect units, sections, question numbers, marks, BL, and CO when present.
+- [x] Preserve source page/range and extraction confidence.
+- [x] Build extraction preview and correction endpoints.
+- [x] Flag ambiguous records; never silently drop content.
 
 ## Epic 3 — Question workspace
 - [ ] Implement question list/detail/edit/reorder.

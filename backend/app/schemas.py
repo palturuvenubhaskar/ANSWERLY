@@ -84,6 +84,34 @@ class ProjectUpdate(StrictModel):
     description: str | None = Field(default=None, max_length=4000)
 
 
+class DocumentResponse(StrictModel):
+    id: str
+    project_id: str
+    title: str
+    original_filename: str
+    file_size_bytes: int
+    mime_type: str
+    sha256: str
+    status: str
+    extraction_warnings: list[str] = Field(default_factory=list)
+
+
+class QuestionItemResponse(StrictModel):
+    id: str
+    position: int
+    question_number: str | None = None
+    section: str | None = None
+    question_text: str
+    original_text: str | None = None
+    marks: int | None = None
+    bl: str | None = None
+    co: str | None = None
+    source_page_start: int | None = None
+    source_page_end: int | None = None
+    extraction_confidence: float | None = None
+    status: str
+
+
 class DeleteProjectRequest(StrictModel):
     confirm: bool
 
