@@ -48,11 +48,11 @@
 - [x] Add edit, approve, regenerate, retry, and cancel actions.
 
 ## Epic 6 — Exports
-- [ ] Implement PDF, DOCX, Markdown, and JSON.
-- [ ] Preserve original unit/question order.
-- [ ] Add include/exclude options for unapproved answers.
-- [ ] Label included unapproved/manual-review answers.
-- [ ] Validate each generated export.
+- [x] Implement PDF, DOCX, Markdown, and JSON.
+- [x] Preserve original unit/question order.
+- [x] Add include/exclude options for unapproved answers.
+- [x] Label included unapproved/manual-review answers.
+- [x] Validate each generated export.
 
 ## Epic 7 — Hardening and release
 - [ ] Run automated tests in `test.md`.

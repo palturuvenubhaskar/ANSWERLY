@@ -10,7 +10,7 @@ import time
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
@@ -18,10 +18,12 @@ from sqlalchemy.orm import Session
 
 from .db import Base, engine, get_db
 from .duplicates import find_duplicates
+from .exports import generate_export
 from .extraction import extract_document, validate_file_content
 from .models import (
     AnswerVersion,
     Document,
+    Export,
     HumanApproval,
     ModelCallAttempt,
     ProcessingJob,
@@ -39,6 +41,7 @@ from .schemas import (
     AnswerCreate,
     DeleteProjectRequest,
     DocumentResponse,
+    ExportCreate,
     HumanApprovalCreate,
     LoginRequest,
     ProcessingJobResponse,
@@ -181,6 +184,13 @@ def _owned_job(db: Session, job_id: str, user_id: str) -> ProcessingJob:
     if job is None:
         raise HTTPException(status_code=404, detail="Processing job not found")
     return job
+
+
+def _owned_export(db: Session, export_id: str, user_id: str) -> Export:
+    export = db.scalar(select(Export).where(Export.id == export_id, Export.user_id == user_id))
+    if export is None:
+        raise HTTPException(status_code=404, detail="Export not found")
+    return export
 
 
 def _valid_email(value: str) -> str:
@@ -1068,3 +1078,139 @@ def list_human_decisions(question_id: str, user: User = Depends(current_user), d
         }
         for decision in decisions
     ]
+
+
+@app.post("/api/v1/documents/{document_id}/exports", status_code=status.HTTP_201_CREATED)
+def create_document_export(
+    document_id: str,
+    body: ExportCreate,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    doc = _owned_document(db, document_id, user.id)
+    query = select(Question).where(Question.document_id == document_id)
+    if body.question_ids:
+        query = query.where(Question.id.in_(body.question_ids))
+    questions = db.scalars(query.order_by(Question.position.asc())).all()
+
+    export_items = []
+    included_ids = []
+
+    for q in questions:
+        latest_version = db.scalar(
+            select(AnswerVersion)
+            .where(AnswerVersion.question_id == q.id)
+            .order_by(AnswerVersion.version_number.desc())
+        )
+
+        is_approved = False
+        if latest_version:
+            latest_human = db.scalar(
+                select(HumanApproval)
+                .where(HumanApproval.answer_version_id == latest_version.id)
+                .order_by(HumanApproval.created_at.desc())
+            )
+            if latest_human:
+                if latest_human.decision == "APPROVED":
+                    is_approved = True
+                elif latest_human.decision == "REJECTED":
+                    is_approved = False
+            else:
+                rep = db.scalar(
+                    select(VerificationReportRecord).where(
+                        VerificationReportRecord.answer_version_id == latest_version.id
+                    )
+                )
+                if rep and rep.verdict == "approved":
+                    is_approved = True
+
+        if not is_approved:
+            if not body.include_unapproved:
+                continue
+            is_unapproved = True
+        else:
+            is_unapproved = False
+
+        unit_name = None
+        if q.unit_id:
+            unit = db.get(Unit, q.unit_id)
+            if unit:
+                unit_name = unit.name
+
+        included_ids.append(q.id)
+        export_items.append(
+            {
+                "id": q.id,
+                "unit_name": unit_name,
+                "question_number": q.question_number,
+                "section": q.section,
+                "question_text": q.question_text,
+                "marks": q.marks,
+                "is_unapproved": is_unapproved,
+                "answer": latest_version.answer_json if latest_version else None,
+            }
+        )
+
+    content_bytes, ext, mime_type = generate_export(doc.title, export_items, body.format)
+    stored = storage_service.save(content_bytes, extension=ext)
+
+    export = Export(
+        project_id=doc.project_id,
+        document_id=doc.id,
+        user_id=user.id,
+        format=body.format.upper(),
+        storage_key=stored.storage_key,
+        status="COMPLETED",
+        options_json={"include_unapproved": body.include_unapproved},
+        included_question_ids=included_ids,
+        finished_at=utc_now(),
+    )
+    db.add(export)
+    db.commit()
+    db.refresh(export)
+
+    return {
+        "id": export.id,
+        "format": export.format,
+        "status": export.status,
+        "included_question_count": len(included_ids),
+        "download_url": f"/api/v1/exports/{export.id}/download",
+    }
+
+
+@app.get("/api/v1/exports/{export_id}")
+def get_export_metadata(export_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    export = _owned_export(db, export_id, user.id)
+    return {
+        "id": export.id,
+        "project_id": export.project_id,
+        "document_id": export.document_id,
+        "format": export.format,
+        "status": export.status,
+        "included_question_ids": export.included_question_ids,
+        "created_at": export.created_at,
+        "finished_at": export.finished_at,
+        "download_url": f"/api/v1/exports/{export.id}/download",
+    }
+
+
+@app.get("/api/v1/exports/{export_id}/download")
+def download_export(export_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    export = _owned_export(db, export_id, user.id)
+    if not export.storage_key:
+        raise HTTPException(status_code=404, detail="Export file content not found")
+    data = storage_service.get(export.storage_key)
+
+    mime_types = {
+        "MD": "text/markdown",
+        "JSON": "application/json",
+        "DOCX": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "PDF": "application/pdf",
+    }
+    media_type = mime_types.get(export.format, "application/octet-stream")
+    ext = export.format.lower()
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="export_{export.id}.{ext}"'},
+    )

@@ -175,3 +175,9 @@ class ProcessingRunResponse(StrictModel):
     project_id: str
     idempotency_key: str
     jobs: list[ProcessingJobResponse]
+
+
+class ExportCreate(StrictModel):
+    format: Literal["pdf", "docx", "md", "json"]
+    question_ids: list[str] | None = None
+    include_unapproved: bool = False
