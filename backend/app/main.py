@@ -23,6 +23,7 @@ from .schemas import (
     HumanApprovalCreate,
     LoginRequest,
     ProjectCreate,
+    ProjectUpdate,
     QuestionCreate,
     ReferenceExcerptCreate,
     RegisterRequest,
@@ -192,6 +193,38 @@ def create_project(body: ProjectCreate, user: User = Depends(current_user), db: 
 def list_projects(user: User = Depends(current_user), db: Session = Depends(get_db)):
     projects = db.scalars(select(Project).where(Project.user_id == user.id).order_by(Project.created_at.desc())).all()
     return [{"id": project.id, "name": project.name, "description": project.description} for project in projects]
+
+
+@app.get("/api/v1/projects/{project_id}")
+def get_project(project_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    project = _owned_project(db, project_id, user.id)
+    question_count = db.scalar(select(func.count(Question.id)).where(Question.project_id == project.id)) or 0
+    reference_count = db.scalar(select(func.count(ReferenceExcerpt.id)).where(ReferenceExcerpt.project_id == project.id)) or 0
+    return {
+        "id": project.id,
+        "name": project.name,
+        "description": project.description,
+        "created_at": project.created_at,
+        "question_count": question_count,
+        "reference_count": reference_count,
+    }
+
+
+@app.patch("/api/v1/projects/{project_id}")
+def update_project(
+    project_id: str,
+    body: ProjectUpdate,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    project = _owned_project(db, project_id, user.id)
+    if body.name is not None:
+        project.name = body.name
+    if body.description is not None:
+        project.description = body.description
+    db.commit()
+    db.refresh(project)
+    return {"id": project.id, "name": project.name, "description": project.description}
 
 
 @app.delete("/api/v1/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -9,9 +9,9 @@
 
 ## Epic 1 — Projects and access control
 - [x] Implement registration/login with password hashing and bearer authorization.
-- [ ] Implement project create/list/open/rename/delete.
-- [ ] Enforce ownership checks on all project resources.
-- [ ] Add private storage abstraction.
+- [x] Implement project create/list/open/rename/delete.
+- [x] Enforce ownership checks on all project resources.
+- [x] Add private storage abstraction.
 
 ## Epic 2 — Document ingestion
 - [ ] Validate PDF/DOCX extension, MIME signature, size, and structure.

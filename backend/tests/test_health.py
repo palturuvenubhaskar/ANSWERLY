@@ -8,16 +8,13 @@ if str(backend_dir) not in sys.path:
 
 from app.main import app
 
-client = TestClient(app)
-
-
-def test_health_check():
+def test_health_check(client: TestClient):
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
 
-def test_ready_check():
+def test_ready_check(client: TestClient):
     response = client.get("/ready")
     assert response.status_code == 200
     assert response.json() == {"status": "ready"}
