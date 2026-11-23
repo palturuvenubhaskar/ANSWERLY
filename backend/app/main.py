@@ -1214,3 +1214,15 @@ def download_export(export_id: str, user: User = Depends(current_user), db: Sess
         media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="export_{export.id}.{ext}"'},
     )
+
+
+@app.post("/api/v1/system/retention-sweep")
+def trigger_retention_sweep(
+    upload_days: int = 30,
+    export_days: int = 7,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    from .retention import cleanup_expired_files
+    result = cleanup_expired_files(db, upload_retention_days=upload_days, export_retention_days=export_days)
+    return {"status": "success", **result}

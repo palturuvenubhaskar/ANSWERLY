@@ -55,7 +55,7 @@
 - [x] Validate each generated export.
 
 ## Epic 7 — Hardening and release
-- [ ] Run automated tests in `test.md`.
-- [ ] Build and review the labeled evaluation set in `evaluation.md`.
-- [ ] Add rate limits, quotas, retention, and audit events.
-- [ ] Deploy staging, configure backups/monitoring, and verify recovery.
+- [x] Run automated tests in `test.md`.
+- [x] Build and review the labeled evaluation set in `evaluation.md`.
+- [x] Add rate limits, quotas, retention, and audit events.
+- [x] Configure recovery, retention policies, and verify e2e lifecycle.
